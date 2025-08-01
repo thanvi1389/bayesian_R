@@ -1,0 +1,198 @@
+
+# Robustness to imputation
+(Primary author: Thanwi Anna Lalu)
+
+Several participants had missing values in the Age variables (Age02–Age05), which were used to construct the time variable in our main models. Initially, individuals with missing values were excluded from the complete-case analyses. To assess the robustness of our findings to this exclusion, we performed mean imputation by replacing each missing Age value with the average Age at that visit across all participants.
+
+```{r Imputing, include=FALSE, cache=TRUE}
+tics.data.m <- data_wide
+# Check for missing values
+#colSums(is.na(tics.data.m))
+
+for (i in 1:5) {
+  age_col <- paste0("Age0", i)
+  mean_age <- mean(tics.data.m[[age_col]], na.rm=TRUE)  # Compute mean of non-missing values
+  tics.data.m[[age_col]][is.na(tics.data.m[[age_col]])] <- mean_age  # Replace missing values
+} 
+
+#Create a time variable that is average of visit time
+Time<- rep(0,4)
+Time[1]<-mean(tics.data.m$Age02 - tics.data.m$Age01,na.rm=TRUE)
+Time[2]<-Time[1] + mean(tics.data.m$Age03 - tics.data.m$Age02,na.rm=TRUE)
+Time[3]<-Time[2] + mean(tics.data.m$Age04 - tics.data.m$Age03,na.rm=TRUE)
+Time[4]<-Time[3] + mean(tics.data.m$Age05 - tics.data.m$Age04,na.rm=TRUE)
+tbar <- mean(Time)
+Timesq <- Time^2
+t2bar <- mean(Timesq)
+```
+
+We re-estimated both Model 1 (random intercept and slope) and Model 2 (random intercept only with quadratic time) using the imputed dataset. 
+
+```{r Model1.Imputed, include=FALSE, cache=TRUE}
+ 
+#Define the data that the model will use
+tics.data.m <- tics.data.m[complete.cases(tics.data.m[, c("ptype", "Age01", "TICS01", "Age02","Age03", "Age04")]), ]
+y <- as.matrix(tics.data.m[,c('TICS02','TICS03','TICS04','TICS05')]); dim(y)
+ptype <- as.numeric(tics.data.m$ptype) 
+Age01 <- as.numeric(tics.data.m$Age01)
+Age01bar <- mean(Age01)
+tics1 <- as.numeric(tics.data.m$TICS01)
+TICS01bar <- mean(tics1) 
+cognitive.data.m <- list(Time = Time, N = nrow(tics.data.m), Y=y, ptype=ptype, tics1=tics1,           tbar=tbar, Age01bar=Age01bar, Age01=Age01, TICS01bar=TICS01bar)
+ 
+jags.1.m <- jags.model(textConnection(model.1), data = cognitive.data.m,
+               n.adapt = 1500, n.chains = 3)
+update(jags.1.m, 5000)
+test.tics.m <- coda.samples(jags.1.m, c("a0control", "a0treat", "a0diff", "abar", "bbar", "gbar", "gbar_positive", "beta1","beta3", "beta4", "sigma", "sigma.alpha", "sigma.beta", "sigma.gamma"), n.iter = 30000, thin=40)
+
+mcmc_summary <- summary(test.tics.m) 
+# Extract samples for the specified parameters
+selected_params <- test.tics.m[, c('a0control', 'a0treat', 'a0diff', 'abar', 'bbar', 'gbar', 'sigma.alpha', 'sigma.beta', 'sigma.gamma', 'beta1', 'beta3', 'beta4')]
+
+# Obtain summary statistics
+summary_stats <- summary(selected_params)
+summary_stats
+```
+
+```{r Model2.Imputed, include=FALSE, cache=TRUE}
+
+##Model 2 : Model with only intercept random, quadratic Time variable #(variables defined earlier)
+
+#New data list because now we have square of Time
+cognitive.data1b.m <- list(Time = Time, tbar=tbar, Timesq=Timesq, t2bar=t2bar, N = nrow(tics.data.m), Y=y, ptype=ptype, tics1=tics1, Age01bar=Age01bar, Age01=Age01, TICS01bar=TICS01bar)
+
+model.2.m <- "
+  model
+    {
+     for( i in 1 : N ) {
+     for( j in 1 : 4 ) {
+     Y[i , j] ~dnorm(mu[i , j],tau)
+     mu[i , j] <- alpha[i]
+     + beta1*ptype[i] 
+     + beta2*(Time[j]-tbar) 
+     + beta3*ptype[i]*(Time[j]-tbar)
+     + beta4*(Timesq[j]-t2bar)
+     + beta5*ptype[i]*(Timesq[j]-t2bar)
+     + beta6*(tics1[i]-TICS01bar) 
+     + beta7*(Age01[i]-Age01bar)
+     }
+      alpha[i]~dnorm(abar,tau.a)
+     }
+     
+     #Priors
+ 
+     abar~dnorm(0,1.0E-6)
+     tau ~dgamma(1,1)
+     tau.a ~ dgamma(1,1)
+     beta1 ~dnorm(0.0,1.0E-6)
+     beta2 ~dnorm(0.0,1.0E-6)
+     beta3 ~dnorm(0.0,1.0E-6)
+     beta4 ~dnorm(0.0,1.0E-6)
+     beta5 ~dnorm(0.0,1.0E-6)
+     beta6 ~dnorm(0.0,1.0E-6)
+      beta7 ~dnorm(0.0,1.0E-6)
+     sigma <- 1/tau  
+     sigma.alpha <- 1/tau.a #var of random intercepts
+     a0control <- abar + beta2*(-tbar) + beta4*(-t2bar) 
+     #baseline prediction for control group at t=0
+     a0treat <- abar + beta2*(-tbar) + beta3*(-tbar) + beta4*(-t2bar) + 
+        beta5*(-t2bar)
+                #baseline prediction, treatement at t=0
+     a0diff <- a0treat - a0control
+     control1 <- beta2 + 2*beta4*2.007773
+     control2 <- beta2 + 2*beta4*3.897765
+     control3 <- beta2 + 2*beta4*5.775691
+     control4 <- beta2 + 2*beta4*7.700159
+     treatment1 <- beta3 + 2*beta5*2.007773 
+     #treatment 1 is derivative of   
+     #beta3*(Time-tbar)+beta3*(Timesq-t2bar) eval at 2nd t, etc.
+     treatment2 <- beta3 + 2*beta5*3.897765
+     treatment3 <- beta3 + 2*beta5*5.775691
+     treatment4 <- beta3 + 2*beta5*7.700159
+     
+       }"
+jags.1b.m <- jags.model(textConnection(model.2.m), data = cognitive.data1b.m,
+                     n.adapt = 2500, n.chains = 4)
+update(jags.1b.m, 2500)
+test1b.tics.m <- coda.samples(jags.1b.m, c("abar", "a0control", "a0treat", "a0diff", 
+                                       "control1", "control2", "control3", "control4",
+                                       "treatment1", "treatment2", "treatment3", "treatment4",
+                                       "beta1", "beta2", "beta3", "beta4", "beta5",
+                                       "beta6", "beta7",
+                                       "sigma", "sigma.alpha"), n.iter = 40000, thin=35)
+
+mcmc_summary1b <- summary(test1b.tics.m) 
+# Extract samples for the specified parameters
+selected_params <- test1b.tics.m[, c('abar', "a0control", "a0treat", "a0diff",
+                                   "treatment1", "treatment2", "treatment3", "treatment4",
+                                   "control1", "control2", "control3", "control4",
+                                   'sigma.alpha', 'beta1', 'beta2', 'beta3', 'beta4', 'beta5', 'beta6', 'beta7')]
+
+# Obtain summary statistics
+summary_stats <- summary(selected_params)
+print(summary_stats)
+```
+
+## Results
+
+```{r Model1.comparison, echo=FALSE, cache=TRUE}
+comparison_table <- data.frame(
+  Variable = c(
+    "difference in expected baseline, treatment-control", 
+    "mean intercept", 
+    "treatment", 
+    "mean slope for (Time - mean(Time))", 
+    "mean slope for treatment * (Time - mean(Time))", 
+    "variance of intercept", 
+    "variance of slope", 
+    "variance of treatment-time interaction", 
+    "TICS01 - mean(TICS01)", 
+    "Age01 - mean(Age01)"
+  ),
+  Complete_Case = c(
+    -0.258, 13.2, 0.977, -0.225, 0.0468, 5.13, 0.110, 0.101, 0.510, -0.169
+  ),
+  Imputed = c(
+    -0.224, 13.2, 0.980, -0.237, 0.0463, 5.19, 0.131, 0.122, 0.510, -0.175
+  )
+)
+
+kable(comparison_table, caption = "Comparison of Key Parameter Estimates: Model 1 (Complete Case vs. Imputed Data)")
+
+```
+Model 1 results remained stable after imputation. The estimated baseline difference in TICS scores between centenarian offspring and controls slightly decreased in magnitude but remained statistically insignificant. Fixed effects and variance components also showed minimal changes, indicating that the exclusion of participants with missing Age values did not meaningfully affect the model’s conclusions.
+ 
+```{r Model2.comparison, echo=FALSE, cache=TRUE} 
+comparison_table <- data.frame(
+  Variable = c("difference in expected baseline (a0diff)",
+               "baseline control (a0control)",
+               "baseline treatment (a0treat)",
+               "Time effect at t=2 (control1)",
+               "Time effect at t=3 (control2)",
+               "Time effect at t=4 (control3)",
+               "Time effect at t=5 (control4)",
+               "Interaction at t=2 (treatment1)",
+               "Interaction at t=3 (treatment2)",
+               "Interaction at t=4 (treatment3)",
+               "Interaction at t=5 (treatment4)",
+               "mean intercept (abar)",
+               "variance of intercept (sigma.alpha)"),
+  Complete_Case = c(0.439, 13.75, 14.19, -0.522, -0.300, -0.0762, 0.156,
+                    -0.102, -0.0265, 0.0498, 0.129, 13.3, 4.95),
+  Imputed = c(0.418, 14.95, 15.37, -0.597, -0.329, -0.062, 0.211,
+              -0.145, -0.019, 0.107, 0.236, 12.66, 5.15)
+)
+
+kable(comparison_table, caption = "Comparison of Key Parameter Estimates: Model 2 (Complete Case vs. Imputed Data)")
+```
+
+In Model 2, both control and treatment groups had slightly higher baseline predictions with the imputed dataset, but the estimated difference between them remained small (0.418 vs. 0.439) and statistically non-significant. The same non-linear trend in TICS scores—initial decline followed by improvement—was preserved. The time and treatment-time interaction effects showed comparable patterns across both datasets.
+
+## Conclusion
+
+Across both Model 1 and Model 2, our findings remained consistent whether missing Age values were imputed or excluded. While mean imputation allowed for the inclusion of more participants, it did not materially alter the parameter estimates or overall conclusions. These results provide strong evidence that our analyses of cognitive trajectories are robust to the handling of missing Age data, supporting the validity of the original findings based on complete cases.
+
+# Appendix: Code
+```{r ref.label=knitr::all_labels(), echo=TRUE, eval=FALSE}
+```
+
